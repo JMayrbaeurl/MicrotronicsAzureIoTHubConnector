@@ -75,7 +75,7 @@ private static M2MBackendClient CreateM2MBackendClient(TraceWriter log)
     result.CreatePollingHistoryCollectionIfNotExists(log).Wait();
     result.FindLastPollingEntry(log);
 
-    result.IsEmulating = Boolean.TrueString.Equals(emulModeString);
+    result.IsEmulating = Boolean.TrueString.ToLower().Equals(emulModeString.ToLower());
 
     return result;
 }
