@@ -27,7 +27,8 @@ public static void Run(TimerInfo myTimer, TraceWriter log)
         } else
         {
             ChannelValues aValue = new ChannelValues(DateTime.Now);
-            aValue.AddChannelValue(client.ChannelNames[0], (DateTime.Now - new DateTime(2017,1,1)).Seconds);
+            aValue.AddChannelValue(client.ChannelNames[0], 
+                (int)(DateTime.Now - new DateTime(2017,1,1)).TotalSeconds);
             values = new List<ChannelValues>();
             values.Add(aValue);
 
@@ -96,6 +97,20 @@ private static MultipleDatapoints CreateDatapointsFromChannelValues(M2MBackendCl
 
     datapoints.customer_id = m2mBackendClient.Customer_Id;
     datapoints.site_id = m2mBackendClient.Site_Id;
+
+    datapoints.Timerange = m2mBackendClient.CreateCurrentTimerange(values);
+
+    datapoints.Timeseries = new List<TimeseriesEntry>();
+    foreach (ChannelValues value in values )
+    {
+        TimeseriesEntry entry = new TimeseriesEntry(value.Timestamp);
+        foreach (KeyValuePair<string, int> channelEntry in value.Values)
+        {
+            entry.Channels.Add(channelEntry.Key, channelEntry.Value);
+        }
+
+        datapoints.Timeseries.Add(entry);
+    }
 
     return datapoints;
 }
@@ -329,9 +344,8 @@ public class M2MBackendClient : IDisposable
         if (this.lastAttempt == null)
             result = result + "]}";
         else {
-            DateTime last = (DateTime)this.lastAttempt.LastValueFrom;
             result = result + "], \"from\" : \"" +
-                last.AddMilliseconds(100.0).ToString("o") + "\", " +
+                this.CurrentBeginDateTime().ToString("o") + "\", " +
                 "\"until\" : \"*\"}";
         }
 
@@ -340,12 +354,32 @@ public class M2MBackendClient : IDisposable
         return result;
     }
 
+    private DateTime CurrentBeginDateTime()
+    {
+        if (this.lastAttempt != null)
+        {
+            DateTime last = (DateTime)this.lastAttempt.LastValueFrom;
+            return last.AddMilliseconds(100.0);
+        } else
+        {
+            return new DateTime(2017, 1, 1);
+        }
+    }
+
     private bool NotAvailableValue(string channelValue)
     {
         bool result = true;
 
         if (channelValue != null)
             result = channelValue.Equals(M2MBackendAPI.NOT_A_NUMBER);
+
+        return result;
+    }
+
+    public Timerange CreateCurrentTimerange(List<ChannelValues> values)
+    {
+        Timerange result = new Timerange(
+            this.CurrentBeginDateTime(), this.lastAttempt.PollingTimestamp);
 
         return result;
     }

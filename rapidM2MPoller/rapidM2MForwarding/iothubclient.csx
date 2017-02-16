@@ -15,6 +15,8 @@ public class IoTHubClient : IDisposable
     public static IoTHubClient CreateNewInstance(string iotHubConnString)
     {
         IoTHubClient result = new IoTHubClient();
+        result.DoSend = true;
+
         result.iotHubClient = DeviceClient.CreateFromConnectionString(iotHubConnString,
             Microsoft.Azure.Devices.Client.TransportType.Mqtt);
 
@@ -30,7 +32,8 @@ public class IoTHubClient : IDisposable
             message.Properties.Add("Customer_Id", client.Customer_Id);
             message.Properties.Add("Site_Id", client.Site_Id);
 
-            iotHubClient.SendEventAsync(message).Wait();
+            Task task = iotHubClient.SendEventAsync(message);
+            task.Wait();
         }
     }
 
