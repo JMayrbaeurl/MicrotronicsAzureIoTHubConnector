@@ -18,6 +18,8 @@ public static void Run(TimerInfo myTimer, TraceWriter log)
     {
         List<ChannelValues> values = null;
 
+        DateTime pollingTime = DateTime.Now;
+
         if (!client.IsEmulating) { 
             // Get latest not processed values from m2mBackend service
             values = client.GetNewTelemetryData(myTimer, log);
@@ -35,25 +37,30 @@ public static void Run(TimerInfo myTimer, TraceWriter log)
             log.Info($"Generated random values for channels");
         }
 
-        // First log polling attempt to DocDB
-        PollingAttempt polling = CreatePollingAttemptForChannelValues(values);
-        if (polling != null)
-            client.WritePollingAttemptToDB(polling, log).Wait();
+        PollingAttempt polling = CreatePollingAttemptForChannelValues(pollingTime, values);
 
-        // If we have got data forward them to IoT Hub
+        // If we have got data, forward them to IoT Hub
         if (values != null && values.Count > 0)
         {
             string connString = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubConnection");
-            using (IoTHubClient iothubclient = IoTHubClient.CreateNewInstance(connString))
+            using (IoTHubClient iothubclient = IoTHubClient.CreateNewInstance(connString, log))
             {
-                MultipleDatapoints datapoints = CreateDatapointsFromChannelValues(client, values);
+                MultipleDatapoints datapoints = CreateDatapointsFromChannelValues(client, pollingTime, values);
                 if (datapoints != null)
                 {
-                    iothubclient.SendDataFrame(client, datapoints);
+                    iothubclient.SendDataFrame(client, datapoints, log);
                     log.Info($"Successfully forwarded data points to IoT Hub");
                 }
+
+                if (polling != null)
+                    polling.IoTHubMessage = datapoints;
             }
         }
+
+        // And log polling attempt to DocDB
+        if (polling != null)
+            client.WritePollingAttemptToDB(polling, log).Wait();
+
     }
 
     log.Info($"C# Timer trigger function executed at: {DateTime.Now}");    
@@ -80,10 +87,10 @@ private static M2MBackendClient CreateM2MBackendClient(TraceWriter log)
     return result;
 }
 
-private static PollingAttempt CreatePollingAttemptForChannelValues(List<ChannelValues> values)
+private static PollingAttempt CreatePollingAttemptForChannelValues(DateTime pollingTime, List<ChannelValues> values)
 {
     PollingAttempt polling = new PollingAttempt();
-    polling.PollingTimestamp = DateTime.Now;
+    polling.PollingTimestamp = pollingTime;
     TimeSpan timeSpanSince2017 = polling.PollingTimestamp - new DateTime(2017, 1, 1);
     polling.Id = timeSpanSince2017.TotalMilliseconds.ToString();
     polling.M2MData = values;
@@ -91,14 +98,14 @@ private static PollingAttempt CreatePollingAttemptForChannelValues(List<ChannelV
     return polling;
 }
 
-private static MultipleDatapoints CreateDatapointsFromChannelValues(M2MBackendClient m2mBackendClient, List<ChannelValues> values)
+private static MultipleDatapoints CreateDatapointsFromChannelValues(M2MBackendClient m2mBackendClient, DateTime pollingTime, List<ChannelValues> values)
 {
     MultipleDatapoints datapoints = new MultipleDatapoints();
 
     datapoints.customer_id = m2mBackendClient.Customer_Id;
     datapoints.site_id = m2mBackendClient.Site_Id;
 
-    datapoints.Timerange = m2mBackendClient.CreateCurrentTimerange(values);
+    datapoints.Timerange = m2mBackendClient.CreateCurrentTimerange(pollingTime, values);
 
     datapoints.Timeseries = new List<TimeseriesEntry>();
     foreach (ChannelValues value in values )
@@ -278,6 +285,7 @@ public class M2MBackendClient : IDisposable
 
         string finalUrl = this.url +
             $"customers/{this.customer_id}/sites/{this.site_id}/histdata0" +
+            (this.lastAttempt != null ? "" : "/youngest") + 
             "?json=" + WebUtility.UrlEncode(this.CreateChannelSelectStringForURLParam(log));
 
         string response;
@@ -376,10 +384,17 @@ public class M2MBackendClient : IDisposable
         return result;
     }
 
-    public Timerange CreateCurrentTimerange(List<ChannelValues> values)
+    public Timerange CreateCurrentTimerange(DateTime pollingTime, List<ChannelValues> values)
     {
-        Timerange result = new Timerange(
-            this.CurrentBeginDateTime(), this.lastAttempt.PollingTimestamp);
+        Timerange result = null;
+
+        if (this.lastAttempt != null)
+             result = new Timerange(this.CurrentBeginDateTime(), pollingTime);
+        else
+        {
+            result = new Timerange(
+                 DateTime.MinValue, pollingTime);
+        }
 
         return result;
     }

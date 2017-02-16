@@ -242,3 +242,4 @@ ModelManifest.xml
 .fake/
 
 **/appsettings.json
+/rapidM2MPoller/Properties/PublishProfiles/zeppelinfuncs - Web Deploy.pubxml
