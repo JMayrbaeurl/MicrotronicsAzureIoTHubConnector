@@ -42,8 +42,7 @@ public static void Run(TimerInfo myTimer, TraceWriter log)
         // If we have got data, forward them to IoT Hub
         if (values != null && values.Count > 0)
         {
-            string connString = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubConnection");
-            using (IoTHubClient iothubclient = IoTHubClient.CreateNewInstance(connString, log))
+            using (IoTHubSender iothubclient = CreateIoTHubSender(log))
             {
                 MultipleDatapoints datapoints = CreateDatapointsFromChannelValues(client, pollingTime, values);
                 if (datapoints != null)
@@ -85,6 +84,26 @@ private static M2MBackendClient CreateM2MBackendClient(TraceWriter log)
     result.IsEmulating = Boolean.TrueString.ToLower().Equals(emulModeString.ToLower());
 
     return result;
+}
+
+private static IoTHubSender CreateIoTHubSender(TraceWriter log)
+{
+    string connString = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubConnection");
+    IoTHubSenderFactory factory = null;
+    if (connString != null)
+        factory = new IoTHubSenderFactory() { ConnectionString = connString };
+    else
+    {
+        string ioTHubURL = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubURL");
+        string ioTHubDeviceId = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubDeviceId");
+        string ioTHubSharedAccessSignature = System.Configuration.ConfigurationManager.AppSettings.Get("IoTHubSharedAccessSignature");
+
+        factory = new IoTHubSenderFactory() { IoTHubURL = ioTHubURL,
+            IotHubDeviceId = ioTHubDeviceId, IotHubSASignature = ioTHubSharedAccessSignature
+        };
+    }
+
+    return factory.CreateNewInstance(log);
 }
 
 private static PollingAttempt CreatePollingAttemptForChannelValues(DateTime pollingTime, List<ChannelValues> values)
