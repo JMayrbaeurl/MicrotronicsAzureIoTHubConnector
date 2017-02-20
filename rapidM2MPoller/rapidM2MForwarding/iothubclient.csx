@@ -100,6 +100,8 @@ public class IoTHubWebClient : IoTHubSender
     public string IotHubDeviceId { get; set; }
     public string IotHubSASignature { get; set; }
 
+    public const string HttpAppPropertyPrefix = "iothub-app-";
+
     public IoTHubWebClient ()
     {
         WebClient webClient = new WebClient();
@@ -132,6 +134,8 @@ public class IoTHubWebClient : IoTHubSender
             log.Info("Now sending device data from m2m to IoT Hub");
 
             this.iotHubWebClient.Headers.Add("Authorization", this.IotHubSASignature);
+            this.iotHubWebClient.Headers.Add(this.HttpAppPropertyPrefix + "Customer_Id", datapoints.customer_id);
+            this.iotHubWebClient.Headers.Add(this.HttpAppPropertyPrefix + "Site_Id", datapoints.site_id);
 
             string finalUrl = $"https://{this.IoTHubURL}/devices/{this.IotHubDeviceId}/messages/events?api-version=2016-11-14";
             using (Stream data = this.iotHubWebClient.OpenWrite(finalUrl, "POST"))
