@@ -2,6 +2,7 @@
 #load ".\models\multipledatapoints.csx"
 #load ".\models\pollingattempt.csx"
 #load ".\iothubclient.csx"
+#load ".\dataaccess.csx"
 
 using System;
 using System.Collections.Generic;
@@ -16,50 +17,54 @@ public static void Run(TimerInfo myTimer, TraceWriter log)
 {
     using (M2MBackendClient client = CreateM2MBackendClient(log))
     {
-        List<ChannelValues> values = null;
-
-        DateTime pollingTime = DateTime.Now;
-
-        if (!client.IsEmulating) { 
-            // Get latest not processed values from m2mBackend service
-            values = client.GetNewTelemetryData(myTimer, log);
-
-            if (values != null)
-                log.Info($"Calling m2mBackend returned {values.Count} channel values");
-        } else
+        foreach (string siteId in client.Site_Ids)
         {
-            ChannelValues aValue = new ChannelValues(DateTime.Now);
-            aValue.AddChannelValue(client.ChannelNames[0], 
-                (int)(DateTime.Now - new DateTime(2017,1,1)).TotalSeconds);
-            values = new List<ChannelValues>();
-            values.Add(aValue);
+            List<ChannelValues> values = null;
+            DateTime pollingTime = DateTime.Now;
+            client.FindLastPollingEntry(siteId, log);
 
-            log.Info($"Generated random values for channels");
-        }
-
-        PollingAttempt polling = CreatePollingAttemptForChannelValues(pollingTime, values);
-
-        // If we have got data, forward them to IoT Hub
-        if (values != null && values.Count > 0)
-        {
-            using (IoTHubSender iothubclient = CreateIoTHubSender(log))
+            if (!client.IsEmulating)
             {
-                MultipleDatapoints datapoints = CreateDatapointsFromChannelValues(client, pollingTime, values);
-                if (datapoints != null)
-                {
-                    iothubclient.SendDataFrame(client, datapoints, log);
-                    log.Info($"Successfully forwarded data points to IoT Hub");
-                }
+                // Get latest not processed values from m2mBackend service
+                values = client.GetNewTelemetryData(siteId, myTimer, log);
 
-                if (polling != null)
-                    polling.IoTHubMessage = datapoints;
+                if (values != null)
+                    log.Info($"Calling m2mBackend returned {values.Count} channel values");
             }
+            else
+            {
+                ChannelValues aValue = new ChannelValues(DateTime.Now);
+                aValue.AddChannelValue(client.ChannelNames[0],
+                    (int)(DateTime.Now - new DateTime(2017, 1, 1)).TotalSeconds);
+                values = new List<ChannelValues>();
+                values.Add(aValue);
+
+                log.Info($"Generated random values for channels");
+            }
+
+            PollingAttempt polling = client.CreatePollingAttemptForChannelValues(siteId, pollingTime, values);
+
+            // If we have got data, forward them to IoT Hub
+            if (values != null && values.Count > 0)
+            {
+                using (IoTHubSender iothubclient = CreateIoTHubSender(log))
+                {
+                    MultipleDatapoints datapoints = CreateDatapointsFromChannelValues(client, siteId, pollingTime, values);
+                    if (datapoints != null)
+                    {
+                        iothubclient.SendDataFrame(datapoints, log);
+                        log.Info($"Successfully forwarded data points to IoT Hub");
+                    }
+
+                    if (polling != null)
+                        polling.IoTHubMessage = datapoints;
+                }
+            }
+
+            // And log polling attempt to DocDB
+            if (polling != null)
+                client.WritePollingAttemptToDB(polling, log).Wait();
         }
-
-        // And log polling attempt to DocDB
-        if (polling != null)
-            client.WritePollingAttemptToDB(polling, log).Wait();
-
     }
 
     log.Info($"C# Timer trigger function executed at: {DateTime.Now}");    
@@ -79,7 +84,6 @@ private static M2MBackendClient CreateM2MBackendClient(TraceWriter log)
 
     result.CreateDatabaseIfNotExists(log).Wait();
     result.CreatePollingHistoryCollectionIfNotExists(log).Wait();
-    result.FindLastPollingEntry(log);
 
     result.IsEmulating = Boolean.TrueString.ToLower().Equals(emulModeString.ToLower());
 
@@ -106,23 +110,12 @@ private static IoTHubSender CreateIoTHubSender(TraceWriter log)
     return factory.CreateNewInstance(log);
 }
 
-private static PollingAttempt CreatePollingAttemptForChannelValues(DateTime pollingTime, List<ChannelValues> values)
-{
-    PollingAttempt polling = new PollingAttempt();
-    polling.PollingTimestamp = pollingTime;
-    TimeSpan timeSpanSince2017 = polling.PollingTimestamp - new DateTime(2017, 1, 1);
-    polling.Id = timeSpanSince2017.TotalMilliseconds.ToString();
-    polling.M2MData = values;
-
-    return polling;
-}
-
-private static MultipleDatapoints CreateDatapointsFromChannelValues(M2MBackendClient m2mBackendClient, DateTime pollingTime, List<ChannelValues> values)
+private static MultipleDatapoints CreateDatapointsFromChannelValues(M2MBackendClient m2mBackendClient, string siteId, DateTime pollingTime, List<ChannelValues> values)
 {
     MultipleDatapoints datapoints = new MultipleDatapoints();
 
     datapoints.customer_id = m2mBackendClient.Customer_Id;
-    datapoints.site_id = m2mBackendClient.Site_Id;
+    datapoints.site_id = siteId;
 
     datapoints.Timerange = m2mBackendClient.CreateCurrentTimerange(pollingTime, values);
 
@@ -148,8 +141,8 @@ public class M2MBackendClient : IDisposable
     private string customer_id = null;
     public string Customer_Id { get { return this.customer_id; } }
 
-    private string site_id = null;
-    public string Site_Id { get { return this.site_id; } }
+    private string[] site_ids = null;
+    public string[] Site_Ids { get { return this.site_ids; } }
 
     private List<String> channelList = new List<String>() { "ch0", "ch3", "ch1" };
     public List<String> ChannelNames { get { return this.channelList;  } }
@@ -158,9 +151,9 @@ public class M2MBackendClient : IDisposable
     private string collectionName = "pollingAttempts";
 
     private WebClient webClient = null;
-    private DocumentClient docClient = null;
+    private PollingDB pollingDB = null;
 
-    private PollingAttempt lastAttempt = null;
+    private PollingAttempt lastForward = null;
 
     public bool IsEmulating { get; set; }
  
@@ -176,113 +169,52 @@ public class M2MBackendClient : IDisposable
         this.url = url;
 
         this.webClient.Headers.Add("Authorization", $"Basic {usernamePassword}");
-        this.docClient = new DocumentClient(new Uri(dbUri), dbKey);
+        this.pollingDB = PollingDB.CreateInstance(this.databaseName, this.collectionName, dbUri, dbKey);
     }
 
     public void SetIdentification(string custId, string siteId)
     {
         this.customer_id = custId;
-        this.site_id = siteId;
+        this.site_ids = siteId.Split(new Char[] { ','});
     }
 
     public async Task CreateDatabaseIfNotExists(TraceWriter log)
     {
-        if (this.docClient != null)
-        {
-            // Check to verify a database with the id=FamilyDB does not exist
-            try
-            {
-                await this.docClient.ReadDatabaseAsync(UriFactory.CreateDatabaseUri(this.databaseName));
-                log.Info($"Found {this.databaseName}");
-            }
-            catch (DocumentClientException de)
-            {
-                // If the database does not exist, create a new database
-                if (de.StatusCode == HttpStatusCode.NotFound)
-                {
-                    await this.docClient.CreateDatabaseAsync(new Database { Id = this.databaseName });
-                    log.Info($"Created {this.databaseName}");
-                }
-                else
-                {
-                    throw;
-                }
-            }
-        }
+        if (this.pollingDB != null)
+            await this.pollingDB.CreateDatabaseIfNotExists(log);
     }
 
     public async Task CreatePollingHistoryCollectionIfNotExists(TraceWriter log)
     {
-        try
-        {
-            await this.docClient.ReadDocumentCollectionAsync(
-                UriFactory.CreateDocumentCollectionUri(this.databaseName, this.collectionName));
-            log.Info($"Found {this.collectionName} collection");
-        }
-        catch (DocumentClientException de)
-        {
-            // If the document collection does not exist, create a new collection
-            if (de.StatusCode == HttpStatusCode.NotFound)
-            {
-                DocumentCollection collectionInfo = new DocumentCollection();
-                collectionInfo.Id = this.collectionName;
-
-                // Configure collections for maximum query flexibility including string range queries.
-                collectionInfo.IndexingPolicy = new IndexingPolicy(new RangeIndex(DataType.String) { Precision = -1 });
-
-                // Here we create a collection with 400 RU/s.
-                await this.docClient.CreateDocumentCollectionAsync(
-                    UriFactory.CreateDatabaseUri(this.databaseName),
-                    collectionInfo,
-                    new RequestOptions { OfferThroughput = 400 });
-
-                log.Info($"Created {this.collectionName} collection");
-            }
-            else
-            {
-                throw;
-            }
-        }
+        if (this.pollingDB != null)
+            await this.pollingDB.CreatePollingHistoryCollectionIfNotExists(log);
     }
 
-    public void FindLastPollingEntry(TraceWriter log)
+    public void FindLastPollingEntry(string siteId, TraceWriter log)
     {
-        if (this.docClient != null) {
-            IQueryable<PollingAttempt> queryResult = 
-                this.docClient.CreateDocumentQuery<PollingAttempt>(
-                    UriFactory.CreateDocumentCollectionUri(this.databaseName, this.collectionName),
-                    "SELECT TOP 1 * FROM pollingAttempts p ORDER BY p.LastValueFrom DESC");
-
-            if (queryResult != null && queryResult.AsEnumerable().Count() > 0)
-            {
-                this.lastAttempt = queryResult.AsEnumerable().First();
-            }  
-        }
+        if (this.pollingDB != null)
+            this.lastForward = this.pollingDB.FindLastPollingEntry(this.Customer_Id, siteId, log);
     }
 
     public async Task WritePollingAttemptToDB(PollingAttempt polling, TraceWriter log)
     {
-        try
-        {
-            await this.docClient.ReadDocumentAsync(UriFactory.CreateDocumentUri(this.databaseName, 
-                this.collectionName, polling.Id));
-            log.Info($"Found {polling.Id}");
-        }
-        catch (DocumentClientException de)
-        {
-            if (de.StatusCode == HttpStatusCode.NotFound)
-            {
-                await this.docClient.CreateDocumentAsync(UriFactory.CreateDocumentCollectionUri(
-                    this.databaseName, this.collectionName), polling);
-                log.Info($"Created Polling entry {polling.Id}");
-            }
-            else
-            {
-                throw;
-            }
-        }
+        if (this.pollingDB != null)
+            await this.pollingDB.WritePollingAttemptToDB(polling, log);
     }
 
+    public PollingAttempt CreatePollingAttemptForChannelValues(string siteId, DateTime pollingTime, List<ChannelValues> values)
+    {
+        PollingAttempt polling = new PollingAttempt();
+        polling.PollingTimestamp = pollingTime;
+        polling.Customer_Id = this.customer_id;
+        polling.Site_Id = siteId;
+
+        TimeSpan timeSpanSince2017 = polling.PollingTimestamp - new DateTime(2017, 1, 1);
+        polling.Id = timeSpanSince2017.TotalMilliseconds.ToString();
+        polling.M2MData = values;
+
+        return polling;
+    }
 
     public string GetMe(TimerInfo myTimer, TraceWriter log)
     {
@@ -298,27 +230,39 @@ public class M2MBackendClient : IDisposable
         return result;
     }
 
-    public List<ChannelValues> GetNewTelemetryData(TimerInfo myTimer, TraceWriter log)
+    public List<ChannelValues> GetNewTelemetryData(string siteId, TimerInfo myTimer, TraceWriter log)
     {
         List<ChannelValues> result = new List<ChannelValues>();
 
-        string finalUrl = this.url +
-            $"customers/{this.customer_id}/sites/{this.site_id}/histdata0" +
-            (this.lastAttempt != null ? "" : "/youngest") + 
-            "?json=" + WebUtility.UrlEncode(this.CreateChannelSelectStringForURLParam(log));
+        try
+        {
+            string finalUrl = this.url +
+                $"customers/{this.customer_id}/sites/{siteId}/histdata0" +
+                (this.lastForward != null ? "" : "/youngest") +
+                "?json=" + WebUtility.UrlEncode(this.CreateChannelSelectStringForURLParam(log));
 
-        string response;
-        using (Stream data = this.webClient.OpenRead(finalUrl))
-        {
-            StreamReader reader = new StreamReader(data);
-            response = reader.ReadToEnd();
-            reader.Close();
-        }
-           
-        if (response != null && response.Length > 0)
-        {
-            List<List<String>> timeseries = JsonConvert.DeserializeObject<List<List<String>>>(response);
-            result = this.CreateChannelValuesForResponse(timeseries);
+            string response;
+            using (Stream data = this.webClient.OpenRead(finalUrl))
+            {
+                StreamReader reader = new StreamReader(data);
+                response = reader.ReadToEnd();
+                reader.Close();
+            }
+
+            if (response != null && response.Length > 0)
+            {
+                List<List<String>> timeseries = JsonConvert.DeserializeObject<List<List<String>>>(response);
+                result = this.CreateChannelValuesForResponse(timeseries);
+            }
+        } catch (System.Net.WebException webEx) { 
+            
+            log.Info($"Received web exception on m2mBackend REST call: {webEx.Message}");
+
+            if ( (webEx.Status == WebExceptionStatus.ProtocolError)
+                && (((HttpWebResponse)webEx.Response).StatusCode == HttpStatusCode.NotFound))
+            {
+                log.Info($"Tried to call m2mBackend REST API with non-existing site '{siteId}'");
+            }
         }
 
         return result;
@@ -368,7 +312,7 @@ public class M2MBackendClient : IDisposable
             }
         }
 
-        if (this.lastAttempt == null)
+        if (this.lastForward == null)
             result = result + "]}";
         else {
             result = result + "], \"from\" : \"" +
@@ -383,9 +327,9 @@ public class M2MBackendClient : IDisposable
 
     private DateTime CurrentBeginDateTime()
     {
-        if (this.lastAttempt != null)
+        if (this.lastForward != null)
         {
-            DateTime last = (DateTime)this.lastAttempt.LastValueFrom;
+            DateTime last = (DateTime)this.lastForward.LastValueFrom;
             return last.AddMilliseconds(100.0);
         } else
         {
@@ -407,7 +351,7 @@ public class M2MBackendClient : IDisposable
     {
         Timerange result = null;
 
-        if (this.lastAttempt != null)
+        if (this.lastForward != null)
              result = new Timerange(this.CurrentBeginDateTime(), pollingTime);
         else
         {
@@ -440,10 +384,10 @@ public class M2MBackendClient : IDisposable
     }
     private void CloseDocDBClient()
     {
-        if (this.docClient != null)
+        if (this.pollingDB != null)
         {
-            this.docClient.Dispose();
-            this.docClient = null;
+            this.pollingDB.Dispose();
+            this.pollingDB = null;
         }
     }
 

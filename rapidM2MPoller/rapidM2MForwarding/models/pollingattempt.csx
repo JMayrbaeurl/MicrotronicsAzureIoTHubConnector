@@ -4,6 +4,9 @@ public class PollingAttempt
     [JsonProperty(PropertyName = "id")]
     public string Id { get; set; }
 
+    public String Customer_Id { get; set; }
+    public String Site_Id { get; set; }
+
     public DateTime PollingTimestamp { get; set; }
 
     public DateTime? LastValueFrom { get; set;  }

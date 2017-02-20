@@ -10,7 +10,7 @@ using Newtonsoft.Json;
 public interface IoTHubSender : IDisposable
 {
     bool DoesSend();
-    void SendDataFrame(M2MBackendClient client, MultipleDatapoints datapoints, TraceWriter log);
+    void SendDataFrame(MultipleDatapoints datapoints, TraceWriter log);
 }
 
 public class IoTHubSenderFactory
@@ -57,14 +57,14 @@ public class IoTHubClient : IoTHubSender
         return this.DoSend;
     }
      
-    public void SendDataFrame(M2MBackendClient client, MultipleDatapoints datapoints, TraceWriter log)
+    public void SendDataFrame(MultipleDatapoints datapoints, TraceWriter log)
     {
         if (datapoints != null && this.DoesSend() && this.iotHubClient != null)
         {
             var message = new Message(Encoding.ASCII.GetBytes(JsonConvert.SerializeObject(datapoints)));
 
-            message.Properties.Add("Customer_Id", client.Customer_Id);
-            message.Properties.Add("Site_Id", client.Site_Id);
+            message.Properties.Add("Customer_Id", datapoints.customer_id);
+            message.Properties.Add("Site_Id", datapoints.site_id);
 
             log.Info("Now sending device data from m2m to IoT Hub");
 
@@ -125,7 +125,7 @@ public class IoTHubWebClient : IoTHubSender
 
     public bool DoesSend() { return true; }
 
-    public void SendDataFrame(M2MBackendClient client, MultipleDatapoints datapoints, TraceWriter log)
+    public void SendDataFrame(MultipleDatapoints datapoints, TraceWriter log)
     {
         if (datapoints != null && this.DoesSend() && this.iotHubWebClient != null)
         {
