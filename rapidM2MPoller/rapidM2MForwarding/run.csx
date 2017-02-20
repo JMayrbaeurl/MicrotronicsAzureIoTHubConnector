@@ -81,6 +81,7 @@ private static M2MBackendClient CreateM2MBackendClient(TraceWriter log)
     M2MBackendClient result = new M2MBackendClient(m2mBackendURL, authorizationString, m2mDBUri, m2mDBKey);
     result.SetIdentification(System.Configuration.ConfigurationManager.AppSettings.Get("Customer_ID"),
         System.Configuration.ConfigurationManager.AppSettings.Get("Site_ID"));
+    result.SetChannels(System.Configuration.ConfigurationManager.AppSettings.Get("Channelnames"));
 
     result.CreateDatabaseIfNotExists(log).Wait();
     result.CreatePollingHistoryCollectionIfNotExists(log).Wait();
@@ -176,6 +177,23 @@ public class M2MBackendClient : IDisposable
     {
         this.customer_id = custId;
         this.site_ids = siteId.Split(new Char[] { ','});
+    }
+
+    public void SetChannels(string channelNames)
+    {
+        if (channelNames != null && channelNames.Length > 0)
+        {
+            if (this.channelList != null)
+                this.channelList.Clear();
+            else
+                this.channelList = new List<string>();
+
+            string[] channels = channelNames.Split(new Char[] {',' });
+            foreach (string aChannelName in channels)
+            {
+                this.channelList.Add(aChannelName);
+            }
+        }
     }
 
     public async Task CreateDatabaseIfNotExists(TraceWriter log)
